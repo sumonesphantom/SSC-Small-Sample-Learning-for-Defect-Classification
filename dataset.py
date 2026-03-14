@@ -1,6 +1,7 @@
 """Dataset utilities for defect classification."""
 
 import os
+import sys
 import random
 from collections import defaultdict
 
@@ -14,9 +15,44 @@ from sklearn.model_selection import train_test_split
 import config
 
 
+# ---------------------------------------------------------------------------
+# Global image cache — loads all images into RAM once to avoid repeated disk I/O
+# ---------------------------------------------------------------------------
+_IMAGE_CACHE = {}
+
+
+def _cache_image(path):
+    """Load image into cache if not already there. Returns the PIL Image."""
+    if path not in _IMAGE_CACHE:
+        _IMAGE_CACHE[path] = Image.open(path).convert("RGB")
+    return _IMAGE_CACHE[path]
+
+
+def preload_images(samples):
+    """Pre-load all images into RAM. Call once before training."""
+    total = len(samples)
+    print(f"Pre-loading {total} images into RAM...", end=" ", flush=True)
+    for i, (path, _) in enumerate(samples):
+        _cache_image(path)
+        if (i + 1) % 1000 == 0:
+            print(f"{i+1}/{total}", end=" ", flush=True)
+    print("Done.")
+
+
+def get_cached_image(path):
+    """Get image from cache (must call preload_images first)."""
+    if path in _IMAGE_CACHE:
+        return _IMAGE_CACHE[path].copy()  # copy so transforms don't mutate cache
+    return Image.open(path).convert("RGB")
+
+
+# ---------------------------------------------------------------------------
+# Data loading helpers
+# ---------------------------------------------------------------------------
+
 def get_all_samples():
     """Load all image paths and labels from the Data directory."""
-    samples = []  # list of (path, class_idx)
+    samples = []
     class_to_idx = {name: idx for idx, name in enumerate(config.CLASS_NAMES)}
 
     for class_name in config.CLASS_NAMES:
@@ -36,14 +72,12 @@ def split_dataset(samples, val_ratio=config.VAL_RATIO, test_ratio=config.TEST_RA
     paths, labels = zip(*samples)
     paths, labels = list(paths), list(labels)
 
-    # For classes with very few samples, ensure at least 1 in each split
     train_paths, temp_paths, train_labels, temp_labels = train_test_split(
         paths, labels,
         test_size=val_ratio + test_ratio,
         stratify=labels,
         random_state=seed,
     )
-    # Split temp into val and test
     relative_test = test_ratio / (val_ratio + test_ratio)
     val_paths, test_paths, val_labels, test_labels = train_test_split(
         temp_paths, temp_labels,
@@ -57,6 +91,10 @@ def split_dataset(samples, val_ratio=config.VAL_RATIO, test_ratio=config.TEST_RA
     test = list(zip(test_paths, test_labels))
     return train, val, test
 
+
+# ---------------------------------------------------------------------------
+# Transforms
+# ---------------------------------------------------------------------------
 
 def get_train_transform():
     return transforms.Compose([
@@ -81,8 +119,12 @@ def get_val_transform():
     ])
 
 
+# ---------------------------------------------------------------------------
+# Datasets
+# ---------------------------------------------------------------------------
+
 class DefectDataset(Dataset):
-    """Standard classification dataset."""
+    """Standard classification dataset (uses cache if available)."""
 
     def __init__(self, samples, transform=None):
         self.samples = samples
@@ -93,11 +135,15 @@ class DefectDataset(Dataset):
 
     def __getitem__(self, idx):
         path, label = self.samples[idx]
-        img = Image.open(path).convert("RGB")
+        img = get_cached_image(path)
         if self.transform:
             img = self.transform(img)
         return img, label
 
+
+# ---------------------------------------------------------------------------
+# Episodic sampling for prototypical training
+# ---------------------------------------------------------------------------
 
 class EpisodicSampler:
     """Generates N-way K-shot episodes for prototypical training."""
@@ -108,15 +154,13 @@ class EpisodicSampler:
         self.q_query = q_query
         self.num_episodes = num_episodes
 
-        # Group samples by class
         self.class_samples = defaultdict(list)
         for path, label in samples:
             self.class_samples[label].append(path)
 
-        # Filter classes with enough samples
         self.available_classes = [
             c for c, paths in self.class_samples.items()
-            if len(paths) >= 2  # need at least 2 (1 support + 1 query)
+            if len(paths) >= 2
         ]
 
     def __len__(self):
@@ -124,7 +168,6 @@ class EpisodicSampler:
 
     def __iter__(self):
         for _ in range(self.num_episodes):
-            # Select n_way classes (use all if possible, else sample)
             if len(self.available_classes) <= self.n_way:
                 episode_classes = self.available_classes[:]
             else:
@@ -137,7 +180,6 @@ class EpisodicSampler:
                 cls_paths = self.class_samples[cls]
                 n_available = len(cls_paths)
 
-                # Adapt k_shot and q_query for small classes
                 k = min(self.k_shot, max(1, n_available // 2))
                 q = min(self.q_query, n_available - k)
                 if q < 1:
@@ -146,7 +188,7 @@ class EpisodicSampler:
 
                 selected = random.sample(cls_paths, k + q)
                 support_paths.extend(selected[:k])
-                support_labels.extend([i] * k)  # re-index to 0..n_way-1
+                support_labels.extend([i] * k)
                 query_paths.extend(selected[k:k + q])
                 query_labels.extend([i] * q)
 
@@ -154,15 +196,19 @@ class EpisodicSampler:
 
 
 def load_episode_images(paths, transform):
-    """Load and transform a batch of images from paths."""
+    """Load and transform a batch of images from paths (uses cache)."""
     images = []
     for p in paths:
-        img = Image.open(p).convert("RGB")
+        img = get_cached_image(p)
         if transform:
             img = transform(img)
         images.append(img)
     return torch.stack(images)
 
+
+# ---------------------------------------------------------------------------
+# Fine-tuning data loaders
+# ---------------------------------------------------------------------------
 
 def get_weighted_sampler(samples):
     """Create a WeightedRandomSampler to handle class imbalance."""
