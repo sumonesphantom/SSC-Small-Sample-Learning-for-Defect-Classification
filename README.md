@@ -456,3 +456,146 @@ model.eval()
 dummy = torch.randn(1, 3, 224, 224)
 torch.onnx.export(model, dummy, "defect_classifier.onnx", opset_version=17)
 ```
+
+---
+
+## Running in Google Colab
+
+The entire pipeline is available as a single self-contained Jupyter notebook: **`defect_classification.ipynb`**. This is the easiest way to run everything with a free GPU.
+
+### Step 1: Open the Notebook in Colab
+
+- Go to [Google Colab](https://colab.research.google.com/)
+- Click **File > Upload notebook** and upload `defect_classification.ipynb`
+- Or, if the repo is on GitHub, click **File > Open notebook > GitHub** and paste the repo URL
+
+### Step 2: Enable GPU Runtime
+
+1. Click **Runtime > Change runtime type**
+2. Set **Hardware accelerator** to **T4 GPU** (free tier) or **A100** (if available)
+3. Click **Save**
+
+### Step 3: Upload the Dataset
+
+You have three options for loading the dataset. Uncomment the one you prefer in the **"Upload / Mount Dataset"** cell:
+
+**Option A — Google Drive (recommended for large datasets):**
+
+1. Upload the `Data/` folder to your Google Drive (e.g., at `My Drive/Data/`)
+2. Uncomment the Google Drive section in the notebook:
+
+```python
+from google.colab import drive
+drive.mount('/content/drive')
+DATA_DIR = "/content/drive/MyDrive/Data"  # adjust to your path
+```
+
+3. Run the cell and authorize access when prompted
+
+**Option B — Upload dataset.zip directly:**
+
+1. Uncomment the upload section in the notebook:
+
+```python
+from google.colab import files
+uploaded = files.upload()  # this opens a file picker
+!unzip -q dataset.zip -d Data/
+DATA_DIR = "/content/Data"
+```
+
+2. Run the cell and select `dataset.zip` from your computer
+3. The zip will be extracted automatically
+
+**Option C — Already in Colab filesystem:**
+
+If you've copied the data into the Colab instance by other means (e.g., `wget`, `gdown`, or cloned the repo):
+
+```python
+DATA_DIR = "Data"  # or wherever your data is
+```
+
+### Step 4: Run All Cells
+
+Click **Runtime > Run all** to execute the full pipeline:
+
+1. Install dependencies
+2. Load and cache all images
+3. Visualize sample images and class distribution
+4. **Stage 1**: Prototypical episodic training (with progress per epoch)
+5. **Stage 2**: Fine-tuning with Focal Loss
+6. **Evaluate**: Classification report, confusion matrix, accuracy vs occurrence, F1 scores, learning curve
+7. **Inference**: Test on a single image with visual output
+
+### Step 5: Save Trained Models
+
+Models are automatically saved to `outputs/` during training. To download them from Colab:
+
+**Option A — Run the download cell at the end of the notebook:**
+
+The last cell zips all outputs and triggers a browser download:
+
+```python
+from google.colab import files
+import shutil
+shutil.make_archive("outputs", "zip", ".", "outputs")
+files.download("outputs.zip")
+```
+
+**Option B — Save to Google Drive:**
+
+```python
+import shutil
+shutil.copytree("outputs", "/content/drive/MyDrive/defect_model_outputs", dirs_exist_ok=True)
+print("Saved to Google Drive!")
+```
+
+**Option C — Download individual files from the file browser:**
+
+1. Click the **folder icon** on the left sidebar in Colab
+2. Navigate to `outputs/models/`
+3. Right-click any `.pth` file and click **Download**
+
+### Saved Files After Training
+
+```
+outputs/
+├── models/
+│   ├── proto_model.pth                        # Best prototypical model
+│   ├── finetune_model.pth                     # Best fine-tuned model
+│   ├── proto_epoch*_val_acc=*.pth             # Top-3 Stage 1 checkpoints
+│   └── finetune_epoch*_val_acc=*.pth          # Top-3 Stage 2 checkpoints
+├── logs/
+│   ├── proto_log.csv                          # Stage 1 metrics per epoch
+│   └── finetune_log.csv                       # Stage 2 metrics per epoch
+├── plots/
+│   ├── accuracy_vs_occurrence.png
+│   ├── confusion_matrix.png
+│   ├── per_class_f1.png
+│   └── learning_curve.png
+└── test_samples.pth                           # Data splits for reproducibility
+```
+
+### Estimated Training Time on Colab
+
+| Colab GPU | Stage 1 | Stage 2 | Total |
+|---|---|---|---|
+| T4 (free tier) | ~20-35 min | ~5-8 min | ~25-45 min |
+| A100 (Colab Pro) | ~8-15 min | ~2-4 min | ~10-20 min |
+
+### Notebook Sections Overview
+
+| Section | What it does |
+|---|---|
+| 1. Setup | Installs dependencies, checks GPU |
+| 2. Data | Mount Drive / upload zip / set local path |
+| 3. Config | All hyperparameters (editable) |
+| 4. Dataset | Image caching, transforms, episodic sampler |
+| 5. Model | PrototypicalNet, FinetuneClassifier, FocalLoss |
+| 6. Callbacks | ModelCheckpoint, EarlyStopping, CSVLogger |
+| 7. Load Data | Stratified split, preload images to RAM |
+| 8. Visualize | Sample images per class + distribution chart |
+| 9. Stage 1 | Prototypical training with callbacks |
+| 10. Stage 2 | Fine-tuning with Focal Loss |
+| 11. Evaluation | All metrics, 4 plots, inference time |
+| 12. Inference | Single-image prediction with visual output |
+| 13. Download | Zip and download all outputs |
